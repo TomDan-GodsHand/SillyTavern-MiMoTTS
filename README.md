@@ -27,7 +27,7 @@
 
 ```bash
 cd <SillyTavern>/data/<user>/extensions
-git clone https://github.com/ymf2317-tech/SillyTavern-MiMoTTS.git mimo-tts
+git clone https://github.com/TomDan-GodsHand/SillyTavern-MiMoTTS.git mimo-tts
 ```
 
 也可以放进 `public/scripts/extensions/third-party/mimo-tts/`，然后硬刷新页面（Ctrl+Shift+R）。

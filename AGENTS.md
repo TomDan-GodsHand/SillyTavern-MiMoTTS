@@ -25,9 +25,11 @@ SillyTavern（酒馆）的**第三方 TTS 供应商扩展**：把小米 MiMo 语
 | git 状态 | `main` 跟踪 `origin/main`；v2.1.0（音色设计）已合入 `main`，提交见 `git log --oneline`（推送状态以 `git status` 为准） | ✅ `git log --oneline` |
 | 本机 node | v24.15.0，`node --check index.js` 通过（退出码 0） | ✅ 实测 |
 
-> **元信息不一致，改之前先问人**：git remote 是 `https://github.com/TomDan-GodsHand/SillyTavern-MiMoTTS.git`（✅ 可核实），
-> 而 `manifest.json:9` 的 `homePage`、`README.md:28` 的 clone 地址、`LICENSE:3` 的署名都写 `ymf2317-tech`（✅ 可核实）。
-> 🟡 **推断**：这是同一项目的另一个账号/改名 —— 未证实。不要擅自"统一"其中一处。
+> **地址与署名的来源不同，改之前先问人**：git remote 与 README 的安装地址都是
+> `https://github.com/TomDan-GodsHand/SillyTavern-MiMoTTS.git`（✅ 可核实）；
+> 而 `manifest.json:7` 的 `author`、`manifest.json:9` 的 `homePage`、`LICENSE:3` 的版权署名仍是 `ymf2317-tech`（✅ 可核实）。
+> 🟡 **推断**：`ymf2317-tech` 是上游作者/另一个账号，`TomDan-GodsHand` 是本仓库的托管处 —— 未证实。
+> 这几处是**署名与来源信息**，改之前必须问维护者，别当成"地址不一致就顺手统一"。
 
 ---
 
