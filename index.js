@@ -23,23 +23,36 @@
  *   非流式整段；克隆模型也不支持预置音色与音色设计。
  *   参考音频存在浏览器 IndexedDB（不塞进 settings.json，避免每次保存写几 MB）。
  *
+ * 音色设计（voice design）：
+ *   model = mimo-v2.5-tts-voicedesign，音色描述文本放 user 消息、正文放 assistant 消息，
+ *   并且绝对不能传 audio.voice —— 实测带上它直接 400：
+ *   {"error":{"code":"400","message":"Param Incorrect","param":"audio.voice is not supported
+ *   for voice design model"}}。它也没有预置音色、没有低延迟流式（流式是"兼容模式"，
+ *   推理完才一次性返回），所以和克隆一样走非流式整段。
+ *   另外每次请求都会重新设计音色，同一描述两次结果不同（实测），要固定音色请改用克隆。
+ *
  * 安装位置：data/<user>/extensions/mimo-tts/（在 git 之外，升级酒馆不受影响）
  */
 
 import { getRequestHeaders, eventSource, event_types } from '../../../../script.js';
 import { registerTtsProvider, saveTtsProviderSettings } from '../../tts/index.js';
 
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 const PROVIDER_NAME = 'MiMo';
 const MIMO_ENDPOINT = 'https://api.xiaomimimo.com/v1/chat/completions';
 const ST_RELAY_ROUTE = '/api/openai/custom/generate-voice';
 const MODEL_PRESET = 'mimo-v2.5-tts';
 const MODEL_CLONE = 'mimo-v2.5-tts-voiceclone';
+const MODEL_DESIGN = 'mimo-v2.5-tts-voicedesign';
 const BYTES_PER_SECOND = 48000; // pcm16 24kHz/16bit 单声道 = 48000 B/s
 const PCM_SAMPLE_RATE = 24000;
 const PREVIEW_TEXT = '你好，我是小米 MiMo 的语音合成，这是一段试听。';
 const CLONE_PREFIX = 'clone:';            // 音色 ID 前缀，避免与预置音色重名
 const CLONE_DISPLAY_PREFIX = '[克隆] ';    // 下拉框里显示的名字
+const DESIGN_PREFIX = 'design:';          // 设计音色的音色 ID 前缀
+const DESIGN_DISPLAY_PREFIX = '[设计] ';   // 下拉框里显示的名字
+const DESIGN_NAME_MAX = 40;               // 与克隆音色取同一个上限
+const DESIGN_PROMPT_MAX = 1000;           // 官方建议 1~4 句，这里给足余量
 const CLONE_MAX_B64 = 10 * 1024 * 1024;   // 官方上限：base64 ≤ 10MB
 const CLONE_WARN_BYTES = 2 * 1024 * 1024; // 超过则提示（每次请求都要重传）
 const IDB_NAME = 'mimo-tts-clones';
@@ -283,6 +296,8 @@ export class MiMoTtsProvider {
         voices: ['茉莉', '冰糖', '苏打', '白桦', 'Mia', 'Chloe', 'Milo', 'Dean'],
         // 克隆音色元数据：[{ name, mime, bytes, createdAt }]，音频本体在 IndexedDB
         clones: [],
+        // 设计音色：[{ name, prompt }]。描述只有几十字，直接进 settings.json（不像克隆要存音频）
+        designs: [],
         // 中转地址留空，由用户自己填（不再写死某台机器的内网地址）
         relay_endpoint: '',
     };
@@ -346,6 +361,27 @@ export class MiMoTtsProvider {
 
             <hr>
 
+            <label>音色设计（mimo-v2.5-tts-voicedesign）：</label>
+            <small>
+                用一段自然语言描述设计音色，<b>不需要参考音频</b>。官方建议 1~4 句，覆盖
+                性别年龄、音色质感、情绪语气、语速节奏；避免自相矛盾的特征，也不要写混响 / EQ 这类后期处理词。<br>
+                音色设计<b>只能直连</b>（中转接口是 OpenAI 的 /v1/audio/speech，没有承载音色描述的字段），
+                也<b>没有低延迟流式</b>，所以和克隆一样走整段播放。<br>
+                注意：<b>同样的描述每次生成的结果都不一样</b>（实测）。想要稳定不变的音色，
+                先用它生成一段满意的音频，再把那段音频当"音色克隆"上传。
+            </small>
+            <div class="flex-container alignItemsCenter flexGap5">
+                <input type="text" id="mimo_design_name" class="text_pole" maxlength="40" placeholder="音色名字，例如：说书人"/>
+            </div>
+            <textarea id="mimo_design_prompt" class="text_pole" rows="3" maxlength="1000" placeholder="音色描述，例如：低沉沙哑的中年男性，语速缓慢，带北方口音，像评书先生讲故事"></textarea>
+            <div class="flex-container alignItemsCenter flexGap5">
+                <button id="mimo_design_add" class="menu_button" type="button">添加设计音色</button>
+                <small>（上方"风格指令"非空时会一并作为语气要求交给模型）</small>
+            </div>
+            <div id="mimo_design_list" class="mimo-design-list" style="margin:8px 0;display:flex;flex-direction:column;gap:6px"></div>
+
+            <hr>
+
             <label>音色克隆（mimo-v2.5-tts-voiceclone）：</label>
             <small>
                 上传一段 <b>5~15 秒清晰人声</b>（mp3 / wav，base64 后 ≤10MB）。
@@ -404,6 +440,13 @@ export class MiMoTtsProvider {
         this.settings.clones = this.settings.clones
             .filter(c => c && typeof c.name === 'string' && c.name.trim().length > 0)
             .map(c => ({ name: c.name, mime: c.mime || 'audio/wav', bytes: Number(c.bytes) || 0, createdAt: Number(c.createdAt) || 0 }));
+        if (!Array.isArray(this.settings.designs)) {
+            this.settings.designs = [];
+        }
+        this.settings.designs = this.settings.designs
+            .filter(d => d && typeof d.name === 'string' && d.name.trim().length > 0)
+            .map(d => ({ name: String(d.name).trim(), prompt: String(d.prompt || '').trim() }))
+            .filter(d => d.prompt.length > 0);
 
         $('#mimo_play_mode').val(this.settings.play_mode);
         $('#mimo_chunk_seconds').val(this.settings.chunk_seconds);
@@ -450,10 +493,28 @@ export class MiMoTtsProvider {
             }
         });
 
+        $('#mimo_design_add').off('click').on('click', (event) => { event.preventDefault(); event.stopPropagation(); this.onDesignAdd(); });
+        $('#mimo_design_list').off('click').on('click', '[data-design-action]', (event) => {
+            const el = event.currentTarget;
+            const name = el?.getAttribute('data-design-name') || '';
+            event.preventDefault();
+            event.stopPropagation();
+            const action = el?.getAttribute('data-design-action');
+            if (!name) {
+                return;
+            }
+            if (action === 'preview') {
+                this.previewTtsVoice(`${DESIGN_PREFIX}${name}`).catch(error => toast('error', `试听失败：${error?.message || error}`));
+            } else if (action === 'delete') {
+                this.onDesignDelete(name);
+            }
+        });
+
         this.renderCloneList();
+        this.renderDesignList();
         await this.checkReady();
 
-        console.info(`[MiMo TTS] v${VERSION} 设置已加载：${this.settings.mode} / ${this.settings.play_mode} / 克隆音色 ${this.settings.clones.length} 个`);
+        console.info(`[MiMo TTS] v${VERSION} 设置已加载：${this.settings.mode} / ${this.settings.play_mode} / 克隆音色 ${this.settings.clones.length} 个 / 设计音色 ${this.settings.designs.length} 个`);
     }
 
     onSettingsChange() {
@@ -583,6 +644,90 @@ export class MiMoTtsProvider {
         toast('success', `已删除克隆音色：${name}`);
     }
 
+    // ------------------------------------------------------------------
+    //  音色设计（mimo-v2.5-tts-voicedesign）
+    //  与克隆的区别：不用上传音频，一段描述文本就是"音色"。
+    //  代价：模型每次请求都重新设计，同一描述两次结果不同（实测），
+    //  所以它适合"把音色定下方向"，要长期稳定的音色请用它生成样本后改用克隆。
+    // ------------------------------------------------------------------
+
+    renderDesignList() {
+        const host = document.getElementById('mimo_design_list');
+        if (!host) {
+            return;
+        }
+        const designs = Array.isArray(this.settings?.designs) ? this.settings.designs : [];
+        if (designs.length === 0) {
+            host.innerHTML = `<small class="mimo-design-empty">还没有设计音色。写一段音色描述并起个名字即可。</small>`;
+            return;
+        }
+        host.innerHTML = designs.map(d => `
+            <div class="mimo-design-row" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <span class="mimo-design-name" style="min-width:8em">${DESIGN_DISPLAY_PREFIX}${escapeHtml(d.name)}</span>
+                <span class="mimo-design-prompt" style="font-size:12px;opacity:.65;flex:1 1 12em;min-width:8em">${escapeHtml(designPreview(d.prompt))}</span>
+                <button class="menu_button" type="button" data-design-action="preview" data-design-name="${escapeAttr(d.name)}">试听</button>
+                <button class="menu_button" type="button" data-design-action="delete" data-design-name="${escapeAttr(d.name)}">删除</button>
+            </div>`).join('');
+    }
+
+    async onDesignAdd() {
+        const nameInput = document.getElementById('mimo_design_name');
+        const promptInput = document.getElementById('mimo_design_prompt');
+        const name = String(nameInput?.value || '').trim();
+        const prompt = String(promptInput?.value || '').trim();
+
+        if (!name) {
+            toast('warning', '给这个设计音色起个名字（会显示成 [设计] 名字）');
+            return;
+        }
+        if (name.length > DESIGN_NAME_MAX) {
+            toast('warning', `名字最多 ${DESIGN_NAME_MAX} 个字`);
+            return;
+        }
+        if (!prompt) {
+            toast('warning', '音色描述不能为空：写 1~4 句，覆盖性别年龄、音色质感、语气与语速');
+            return;
+        }
+        if (prompt.length > DESIGN_PROMPT_MAX) {
+            toast('warning', `音色描述最多 ${DESIGN_PROMPT_MAX} 个字，1~4 句就够`);
+            return;
+        }
+
+        this.settings.designs = (this.settings.designs || []).filter(d => d.name !== name).concat({ name, prompt });
+        this.settings.designs.sort((a, b) => a.name.localeCompare(b.name, 'zh'));
+        this.voices = await this.fetchTtsVoiceObjects();
+        saveTtsProviderSettings();
+        this.markSaved();
+        this.renderDesignList();
+
+        if (nameInput) {
+            nameInput.value = '';
+        }
+        if (promptInput) {
+            promptInput.value = '';
+        }
+        toast('success', `已添加设计音色：${name}（同一描述每次会有差异，想固定请改用克隆）`);
+    }
+
+    async onDesignDelete(name) {
+        if (typeof window !== 'undefined' && typeof window.confirm === 'function'
+            && !window.confirm(`删除设计音色「${name}」？（描述文本会一并删除）`)) {
+            return;
+        }
+        this.settings.designs = (this.settings.designs || []).filter(d => d.name !== name);
+        this.voices = await this.fetchTtsVoiceObjects();
+        saveTtsProviderSettings();
+        this.markSaved();
+        this.renderDesignList();
+        toast('success', `已删除设计音色：${name}`);
+    }
+
+    /** 组装 voicedesign 的 user 消息：音色描述 +（可选）全局风格指令，官方允许两者同放 user */
+    buildDesignPrompt(prompt) {
+        const style = String(this.settings.style || '').trim();
+        return style ? `${prompt}\n风格指令：${style}` : prompt;
+    }
+
     async checkReady() {
         this.voices = await this.fetchTtsVoiceObjects();
     }
@@ -590,6 +735,7 @@ export class MiMoTtsProvider {
     async onRefreshClick() {
         this.voices = await this.fetchTtsVoiceObjects();
         this.renderCloneList();
+        this.renderDesignList();
     }
 
     async getVoice(voiceName) {
@@ -610,7 +756,12 @@ export class MiMoTtsProvider {
             voice_id: `${CLONE_PREFIX}${c.name}`,
             lang: 'zh-CN',
         }));
-        return preset.concat(clones);
+        const designs = (this.settings.designs || []).map(d => ({
+            name: `${DESIGN_DISPLAY_PREFIX}${d.name}`,
+            voice_id: `${DESIGN_PREFIX}${d.name}`,
+            lang: 'zh-CN',
+        }));
+        return preset.concat(clones).concat(designs);
     }
 
     /** 酒馆的 voicemap 里存的是显示名，generateTts 收到的是 voice_id —— 两种都接住 */
@@ -622,12 +773,19 @@ export class MiMoTtsProvider {
         if (raw.startsWith(CLONE_PREFIX) || raw.startsWith(CLONE_DISPLAY_PREFIX)) {
             return raw.startsWith(CLONE_PREFIX) ? raw : `${CLONE_PREFIX}${raw.slice(CLONE_DISPLAY_PREFIX.length)}`;
         }
+        if (raw.startsWith(DESIGN_PREFIX) || raw.startsWith(DESIGN_DISPLAY_PREFIX)) {
+            return raw.startsWith(DESIGN_PREFIX) ? raw : `${DESIGN_PREFIX}${raw.slice(DESIGN_DISPLAY_PREFIX.length)}`;
+        }
         const match = this.voices.find(v => v.name === raw || v.voice_id === raw);
         return match ? match.voice_id : raw;
     }
 
     isCloneVoice(voiceId) {
         return String(voiceId || '').startsWith(CLONE_PREFIX);
+    }
+
+    isDesignVoice(voiceId) {
+        return String(voiceId || '').startsWith(DESIGN_PREFIX);
     }
 
     // ------------------------------------------------------------------
@@ -653,6 +811,11 @@ export class MiMoTtsProvider {
         // 代价是每批请求都会重传一次参考音频（10 秒 mp3 约 100KB，可接受）。
         if (this.isCloneVoice(resolved)) {
             return this.wholeTts(text, resolved, signal);
+        }
+        // 音色设计：不能分批 —— 每批请求都会重新设计一次音色，同一条消息里分批会让音色中途漂移。
+        // 所以用 wholeTts 的 single 逃生口整段一次合成（代价是长文本首音更慢，但音色统一）。
+        if (this.isDesignVoice(resolved)) {
+            return this.wholeTts(text, resolved, signal, { single: true });
         }
         if (this.settings.play_mode === 'chunked' && this.settings.mode === 'direct') {
             return this.chunkedTts(text, resolved, signal);
@@ -694,7 +857,8 @@ export class MiMoTtsProvider {
      * 整段播放：逐批请求、边到边抛。
      * 每批都是一整段完整音频（内容不切碎），所以不会出现"突突突"；
      * 批与批之间会有一次换源开销（0.3~0.5s），落在句子边界上。
-     * options.single = true 时不分批（克隆音色用）。
+     * options.single = true 时不分批（音色设计用：它每次请求都重新设计音色，
+     * 分批会让同一条消息里的音色漂移）。
      */
     async *wholeTts(text, voiceId, signal, options = {}) {
         const chunks = options.single || !this.settings.pipeline ? [text] : this.splitIntoChunks(text);
@@ -741,6 +905,9 @@ export class MiMoTtsProvider {
     async fetchWholeBytes(text, voiceId, signal) {
         if (this.isCloneVoice(voiceId)) {
             return this.fetchCloneBytes(text, voiceId, signal);
+        }
+        if (this.isDesignVoice(voiceId)) {
+            return this.fetchDesignBytes(text, voiceId, signal);
         }
 
         if (this.settings.mode === 'relay') {
@@ -855,6 +1022,57 @@ export class MiMoTtsProvider {
         const bytes = base64ToBytes(b64);
         if (bytes.length === 0) {
             throw new Error('克隆合成返回的音频为空，请换一段更清晰的参考音频再试');
+        }
+        return { bytes, contentType: 'audio/mpeg' };
+    }
+
+    /**
+     * 音色设计合成（mimo-v2.5-tts-voicedesign）。
+     * 官方契约：音色描述放 user 消息、正文放 assistant 消息，**不能传 audio.voice** ——
+     * 实测带上它直接 400（audio.voice is not supported for voice design model）。
+     * 它同样没有低延迟流式，所以也只走非流式整段；每批请求都会重新设计一次音色。
+     */
+    async fetchDesignBytes(text, voiceId, signal) {
+        if (this.settings.mode === 'relay') {
+            throw new Error('音色设计只支持直连：中转接口是 OpenAI 的 /v1/audio/speech，没有承载音色描述的字段。请把"传输方式"改回直连。');
+        }
+
+        const name = String(voiceId).slice(DESIGN_PREFIX.length);
+        const design = (this.settings.designs || []).find(d => d.name === name);
+        if (!design || !design.prompt) {
+            throw new Error(`找不到设计音色「${name}」的描述（可能已被删除）。请在 MiMo 设置里重新添加。`);
+        }
+
+        const payload = {
+            model: MODEL_DESIGN,
+            messages: [
+                { role: 'user', content: this.buildDesignPrompt(design.prompt) },
+                { role: 'assistant', content: text },
+            ],
+            // 这里绝对不能带 voice：voicedesign 不支持该字段，带了直接 400
+            audio: { format: 'mp3' },
+        };
+
+        let response = await this.postJson(payload, signal);
+        if (!response.ok && response.status >= 500) {
+            console.warn(`[MiMo TTS] 音色设计合成返回 ${response.status}，1 秒后重试一次`);
+            await new Promise(r => setTimeout(r, 1000));
+            response = await this.postJson(payload, signal);
+        }
+        if (!response.ok) {
+            const detail = await response.text();
+            throw new Error(`音色设计合成失败 HTTP ${response.status}: ${detail}`);
+        }
+
+        const json = await response.json();
+        const b64 = json?.choices?.[0]?.message?.audio?.data;
+        if (!b64) {
+            const detail = json?.base_resp?.status_msg || json?.error?.message || '返回体里没有音频数据';
+            throw new Error(`音色设计未返回音频：${detail}`);
+        }
+        const bytes = base64ToBytes(b64);
+        if (bytes.length === 0) {
+            throw new Error('音色设计返回的音频为空，请把描述写得更具体一些再试');
         }
         return { bytes, contentType: 'audio/mpeg' };
     }
@@ -1038,6 +1256,12 @@ export class MiMoTtsProvider {
         this.audioElement.play();
         this.audioElement.onended = () => URL.revokeObjectURL(url);
     }
+}
+
+/** 设计音色列表里的一行描述预览：压掉换行、超长截断 */
+function designPreview(prompt, max = 60) {
+    const s = String(prompt || '').replace(/\s+/g, ' ').trim();
+    return s.length > max ? `${s.slice(0, max)}…` : s;
 }
 
 function escapeHtml(value) {
