@@ -1,6 +1,6 @@
 /**
  * MiMo TTS — 小米 MiMo 语音合成供应商（SillyTavern 第三方扩展）
- * v2.0.0 合并版：公开版（0.2.0）+ 自用完整版（1.4.x）+ 音色克隆
+ * v2.1.0：公开版（0.2.0）+ 自用完整版（1.4.x）+ 音色克隆 + 音色设计
  *
  * 关于音频质量的要点（重要，勿轻易改动）：
  *   MiMo 的 /v1/chat/completions 在 stream:true 时，**每个 SSE 数据块都会自带一个
@@ -443,10 +443,14 @@ export class MiMoTtsProvider {
         if (!Array.isArray(this.settings.designs)) {
             this.settings.designs = [];
         }
+        const rawDesigns = this.settings.designs;
         this.settings.designs = this.settings.designs
             .filter(d => d && typeof d.name === 'string' && d.name.trim().length > 0)
             .map(d => ({ name: String(d.name).trim(), prompt: String(d.prompt || '').trim() }))
             .filter(d => d.prompt.length > 0);
+        if (this.settings.designs.length !== rawDesigns.length) {
+            console.warn(`[MiMo TTS] 有 ${rawDesigns.length - this.settings.designs.length} 个设计音色缺少描述，已忽略（请在面板里补上描述或删除）`);
+        }
 
         $('#mimo_play_mode').val(this.settings.play_mode);
         $('#mimo_chunk_seconds').val(this.settings.chunk_seconds);
@@ -533,6 +537,13 @@ export class MiMoTtsProvider {
             .split(',')
             .map(v => v.trim())
             .filter(v => v.length > 0);
+        // 预置音色名如果占用了本扩展的保留前缀，会被前缀分支当成克隆/设计音色劫持：
+        // 轻则请求失败，重则静默换成另一个音色。这里只提醒，不改用户配置。
+        const reservedNames = this.settings.voices.filter(v => v.startsWith(CLONE_PREFIX) || v.startsWith(CLONE_DISPLAY_PREFIX)
+            || v.startsWith(DESIGN_PREFIX) || v.startsWith(DESIGN_DISPLAY_PREFIX));
+        if (reservedNames.length > 0) {
+            console.warn(`[MiMo TTS] 音色列表里有名字占用了保留前缀（${reservedNames.join('、')}），它们会被当作克隆/设计音色处理，建议改名`);
+        }
         this.settings.style = String($('#mimo_style').val() || '');
         this.settings.relay_endpoint = String($('#mimo_relay_endpoint').val() || '').trim();
         // clones 由增删按钮维护，这里不动它
@@ -921,7 +932,7 @@ export class MiMoTtsProvider {
                 signal,
                 body: JSON.stringify({
                     provider_endpoint: endpoint,
-                    model: this.settings.model,
+                    model: resolvePresetModel(this.settings.model),
                     input: text,
                     voice: voiceId,
                     response_format: 'mp3',
@@ -1040,7 +1051,7 @@ export class MiMoTtsProvider {
         const name = String(voiceId).slice(DESIGN_PREFIX.length);
         const design = (this.settings.designs || []).find(d => d.name === name);
         if (!design || !design.prompt) {
-            throw new Error(`找不到设计音色「${name}」的描述（可能已被删除）。请在 MiMo 设置里重新添加。`);
+            throw new Error(`找不到设计音色「${name}」的描述（可能已被删除，或「音色列表」里有同名音色占用了 design: 前缀）。请在 MiMo 设置里补上描述或改名。`);
         }
 
         const payload = {
@@ -1202,7 +1213,7 @@ export class MiMoTtsProvider {
     postDirect(text, voiceId, stream, format, signal) {
         const style = String(this.settings.style || '').trim();
         const payload = {
-            model: this.settings.model || MODEL_PRESET,
+            model: resolvePresetModel(this.settings.model),
             messages: [
                 { role: 'user', content: style },
                 { role: 'assistant', content: text },
@@ -1258,10 +1269,23 @@ export class MiMoTtsProvider {
     }
 }
 
-/** 设计音色列表里的一行描述预览：压掉换行、超长截断 */
+/**
+ * 「模型」输入框是自由文本，用户可能把它填成 voicedesign。那个模型不接受 audio.voice，
+ * 预置音色（直连 / 分块 / 中转）带上它必然 400，所以在这里提前拦下并给可操作的提示。
+ */
+function resolvePresetModel(model) {
+    const m = String(model || '').trim();
+    if (m === MODEL_DESIGN) {
+        throw new Error('「模型」被填成了 mimo-v2.5-tts-voicedesign：该模型不接受 voice 字段，预置音色与中转都会 400。'
+            + '音色设计请用面板下方的「音色设计」区（它会自动使用该模型），这里请改回 mimo-v2.5-tts。');
+    }
+    return m || MODEL_PRESET;
+}
+
+/** 设计音色列表里的一行描述预览：压掉换行、超长截断（按码点切，避免把 emoji 劈成半个） */
 function designPreview(prompt, max = 60) {
-    const s = String(prompt || '').replace(/\s+/g, ' ').trim();
-    return s.length > max ? `${s.slice(0, max)}…` : s;
+    const chars = Array.from(String(prompt || '').replace(/\s+/g, ' ').trim());
+    return chars.length > max ? `${chars.slice(0, max).join('')}…` : chars.join('');
 }
 
 function escapeHtml(value) {
