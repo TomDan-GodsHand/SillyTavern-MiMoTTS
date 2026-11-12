@@ -1,6 +1,6 @@
 /**
  * MiMo TTS — 小米 MiMo 语音合成供应商（SillyTavern 第三方扩展）
- * v2.1.0：公开版（0.2.0）+ 自用完整版（1.4.x）+ 音色克隆 + 音色设计
+ * v2.2.0：公开版（0.2.0）+ 自用完整版（1.4.x）+ 音色克隆 + 音色设计 + 自动音色设计
  *
  * 关于音频质量的要点（重要，勿轻易改动）：
  *   MiMo 的 /v1/chat/completions 在 stream:true 时，**每个 SSE 数据块都会自带一个
@@ -31,13 +31,21 @@
  *   推理完才一次性返回），所以和克隆一样走非流式整段。
  *   另外每次请求都会重新设计音色，同一描述两次结果不同（实测），要固定音色请改用克隆。
  *
+ * 自动音色设计（配合 Luker 的「NPC 对话归属」）：
+ *   宿主调 provider 是 generateTts(text, voiceId, voiceMapKey)：第三个参数带着说话人名
+ *   （多音色模式下形如 `说书人 ("Quotes")`）。归属解析认出的 NPC 会被宿主写进 provider 的
+ *   voiceMap，但值是 [Default Voice]（= 认出了这个人、还没给它配音色）。
+ *   若用户开了「自动音色设计」，就用宿主已配好的归属解析连接 / 聊天补全预设
+ *   （scripts/lib/iter-tool-calling.js 的 requestToolCallWithRetry）写一段音色描述，
+ *   存成 `[设计] 名字` 后按 voice design 合成；任何一步失败都回落到默认音色，不打断朗读。
+ *
  * 安装位置：data/<user>/extensions/mimo-tts/（在 git 之外，升级酒馆不受影响）
  */
 
 import { getRequestHeaders, eventSource, event_types } from '../../../../script.js';
 import { registerTtsProvider, saveTtsProviderSettings } from '../../tts/index.js';
 
-const VERSION = '2.1.0';
+const VERSION = '2.2.0';
 const PROVIDER_NAME = 'MiMo';
 const MIMO_ENDPOINT = 'https://api.xiaomimimo.com/v1/chat/completions';
 const ST_RELAY_ROUTE = '/api/openai/custom/generate-voice';
@@ -53,6 +61,11 @@ const DESIGN_PREFIX = 'design:';          // 设计音色的音色 ID 前缀
 const DESIGN_DISPLAY_PREFIX = '[设计] ';   // 下拉框里显示的名字
 const DESIGN_NAME_MAX = 40;               // 与克隆音色取同一个上限
 const DESIGN_PROMPT_MAX = 1000;           // 官方建议 1~4 句，这里给足余量
+// 【自动音色设计】宿主（Luker）的约定：没配过音色的说话人，在 provider voiceMap 里的值是 '[Default Voice]'
+const DEFAULT_VOICE_MARKER = '[Default Voice]';
+// 多音色模式下 voiceMapKey 会带段类型后缀，取说话人名时要先去掉
+const MULTI_VOICE_KEY_SUFFIXES = [' ("Quotes")', ' (*Text inside asterisks*)', ' (Other text)'];
+const AUTO_DESIGN_TOOL_NAME = 'report_voice_description';
 const CLONE_MAX_B64 = 10 * 1024 * 1024;   // 官方上限：base64 ≤ 10MB
 const CLONE_WARN_BYTES = 2 * 1024 * 1024; // 超过则提示（每次请求都要重传）
 const IDB_NAME = 'mimo-tts-clones';
@@ -296,8 +309,10 @@ export class MiMoTtsProvider {
         voices: ['茉莉', '冰糖', '苏打', '白桦', 'Mia', 'Chloe', 'Milo', 'Dean'],
         // 克隆音色元数据：[{ name, mime, bytes, createdAt }]，音频本体在 IndexedDB
         clones: [],
-        // 设计音色：[{ name, prompt }]。描述只有几十字，直接进 settings.json（不像克隆要存音频）
+        // 设计音色：[{ name, prompt, auto? }]。描述只有几十字，直接进 settings.json（不像克隆要存音频）
         designs: [],
+        // 自动音色设计：归属解析认出、但还没配音色的 NPC，自动写描述并用设计音色合成
+        auto_design: false,
         // 中转地址留空，由用户自己填（不再写死某台机器的内网地址）
         relay_endpoint: '',
     };
@@ -380,6 +395,19 @@ export class MiMoTtsProvider {
             </div>
             <div id="mimo_design_list" class="mimo-design-list" style="margin:8px 0;display:flex;flex-direction:column;gap:6px"></div>
 
+            <hr style="opacity:.3">
+
+            <label class="checkbox_label">
+                <input type="checkbox" id="mimo_auto_design"/>
+                <span>自动音色设计（归属解析认出、但还没配音色的角色）</span>
+            </label>
+            <small>
+                需要宿主（Luker）的归属解析能力：<b>复用你已选的「归属解析 API 连接 / 聊天补全预设」，不用在这里再填 key</b>。
+                当某个说话人在 voiceMap 里仍是 <code>[Default Voice]</code> 时，自动让模型写一段音色描述，
+                存成 <code>[设计] 名字</code> 后用它合成（列表里标 <b>AI</b>，可改可删）。
+                任一步失败都会自动回落到默认音色，不会打断朗读。原版酒馆没有这套机制，勾了也不生效。
+            </small>
+
             <hr>
 
             <label>音色克隆（mimo-v2.5-tts-voiceclone）：</label>
@@ -446,7 +474,9 @@ export class MiMoTtsProvider {
         const rawDesigns = this.settings.designs;
         this.settings.designs = this.settings.designs
             .filter(d => d && typeof d.name === 'string' && d.name.trim().length > 0)
-            .map(d => ({ name: String(d.name).trim(), prompt: String(d.prompt || '').trim() }))
+            .map(d => (d.auto
+                ? { name: String(d.name).trim(), prompt: String(d.prompt || '').trim(), auto: true }
+                : { name: String(d.name).trim(), prompt: String(d.prompt || '').trim() }))
             .filter(d => d.prompt.length > 0);
         if (this.settings.designs.length !== rawDesigns.length) {
             console.warn(`[MiMo TTS] 有 ${rawDesigns.length - this.settings.designs.length} 个设计音色缺少描述，已忽略（请在面板里补上描述或删除）`);
@@ -463,6 +493,7 @@ export class MiMoTtsProvider {
         $('#mimo_voices').val(this.settings.voices.join(','));
         $('#mimo_style').val(this.settings.style);
         $('#mimo_relay_endpoint').val(this.settings.relay_endpoint);
+        $('#mimo_auto_design').prop('checked', !!this.settings.auto_design);
 
         const bind = (selector, handler) => {
             $(selector).off('input change').on('input change', handler);
@@ -479,6 +510,7 @@ export class MiMoTtsProvider {
         bind('#mimo_voices', () => this.onSettingsChange());
         bind('#mimo_style', () => this.onSettingsChange());
         bind('#mimo_relay_endpoint', () => this.onSettingsChange());
+        bind('#mimo_auto_design', () => this.onSettingsChange());
 
         $('#mimo_clone_add').off('click').on('click', (event) => { event.preventDefault(); event.stopPropagation(); this.onCloneAdd(); });
         $('#mimo_clone_list').off('click').on('click', '[data-clone-action]', (event) => {
@@ -546,6 +578,7 @@ export class MiMoTtsProvider {
         }
         this.settings.style = String($('#mimo_style').val() || '');
         this.settings.relay_endpoint = String($('#mimo_relay_endpoint').val() || '').trim();
+        this.settings.auto_design = !!$('#mimo_auto_design').prop('checked');
         // clones 由增删按钮维护，这里不动它
         saveTtsProviderSettings();
         this.markSaved();
@@ -674,7 +707,7 @@ export class MiMoTtsProvider {
         }
         host.innerHTML = designs.map(d => `
             <div class="mimo-design-row" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                <span class="mimo-design-name" style="min-width:8em">${DESIGN_DISPLAY_PREFIX}${escapeHtml(d.name)}</span>
+                <span class="mimo-design-name" style="min-width:8em">${DESIGN_DISPLAY_PREFIX}${escapeHtml(d.name)}${d.auto ? ' <small style="opacity:.6">AI</small>' : ''}</span>
                 <span class="mimo-design-prompt" style="font-size:12px;opacity:.65;flex:1 1 12em;min-width:8em">${escapeHtml(designPreview(d.prompt))}</span>
                 <button class="menu_button" type="button" data-design-action="preview" data-design-name="${escapeAttr(d.name)}">试听</button>
                 <button class="menu_button" type="button" data-design-action="delete" data-design-name="${escapeAttr(d.name)}">删除</button>
@@ -803,7 +836,12 @@ export class MiMoTtsProvider {
     //  合成入口
     // ------------------------------------------------------------------
 
-    generateTts(text, voiceId) {
+    /**
+     * @param {string} text 要朗读的文本（宿主已切好的片段）
+     * @param {string} voiceId 宿主按 voiceMap 选出的音色
+     * @param {string} [voiceMapKey] 宿主额外传的 voiceMap 键：带说话人名（多音色模式下带段类型后缀）
+     */
+    generateTts(text, voiceId, voiceMapKey) {
         // 【防护】白名单式正则可能把「整条都是元数据块」的消息删空
         // （例如整条只有 <phone_module> 或 <chat_history>），
         // 而 MiMo 对空内容会返回 HTTP 500 —— 这里提前拦下，别把 500 抛给用户。
@@ -816,6 +854,13 @@ export class MiMoTtsProvider {
         const resolved = this.resolveVoiceId(voiceId);
         // 新请求覆盖旧请求：中止上一个仍在途的生成
         const signal = beginGeneration();
+
+        // 【自动音色设计】只在「宿主认出了这个说话人、但它还没有自己的音色」时接管；
+        // 接管失败会回落到宿主给的默认音色。判断依据见 resolveAutoDesignSpeaker。
+        const autoSpeaker = this.resolveAutoDesignSpeaker(voiceMapKey);
+        if (autoSpeaker) {
+            return this.autoDesignTts(text, autoSpeaker, resolved, signal);
+        }
 
         // 克隆：官方把流式降级成"推理完成后一次性返回"，拿不到边生成边播。
         // 只能靠分段流水线抢首音：第一批先合成先播，后面的边合成边播。
@@ -832,6 +877,122 @@ export class MiMoTtsProvider {
             return this.chunkedTts(text, resolved, signal);
         }
         return this.wholeTts(text, resolved, signal);
+    }
+
+    // ------------------------------------------------------------------
+    //  自动音色设计（配合 Luker 的「NPC 对话归属」）
+    //  宿主调 provider 是 generateTts(text, voiceId, voiceMapKey)，第三个参数带说话人名；
+    //  归属解析认出的 NPC 会被写进 provider voiceMap，但值是 [Default Voice]（还没配音色）。
+    //  这里补上「没音色 → 生成描述 → 用设计音色合成」，失败一律回落到默认音色。
+    // ------------------------------------------------------------------
+
+    /** 取宿主上下文；原版酒馆没有 getContext 就返回 null */
+    getHostContext() {
+        try {
+            return globalThis.SillyTavern?.getContext?.() || null;
+        } catch {
+            return null;
+        }
+    }
+
+    /** 实时读 provider voiceMap：宿主会往里加新 NPC，settings 里那份可能是旧的 */
+    getLiveVoiceMap() {
+        try {
+            const live = this.getHostContext()?.extensionSettings?.tts?.[PROVIDER_NAME]?.voiceMap;
+            if (live && typeof live === 'object') {
+                return live;
+            }
+        } catch {
+            /* ignore */
+        }
+        return this.settings?.voiceMap || {};
+    }
+
+    /** 这次调用要不要走自动音色设计？返回说话人名，或 null（交回宿主） */
+    resolveAutoDesignSpeaker(voiceMapKey) {
+        if (!this.settings?.auto_design) {
+            return null;
+        }
+        const key = String(voiceMapKey || '').trim();
+        if (!key) {
+            return null;
+        }
+        if (this.getLiveVoiceMap()[key] !== DEFAULT_VOICE_MARKER) {
+            return null; // 有专属音色 / 被禁用 / 未知 —— 都不接管
+        }
+        const speaker = extractSpeakerName(key);
+        if (!speaker || speaker === DEFAULT_VOICE_MARKER) {
+            return null;
+        }
+        return speaker;
+    }
+
+    /** 自动音色设计的合成入口；拿不到描述就用 fallbackVoiceId 正常合成 */
+    async *autoDesignTts(text, speaker, fallbackVoiceId, signal) {
+        const design = await this.ensureAutoDesign(speaker, text, signal);
+        if (design) {
+            yield* this.wholeTts(text, `${DESIGN_PREFIX}${speaker}`, signal, { single: true });
+            return;
+        }
+        yield* this.wholeTts(text, fallbackVoiceId, signal);
+    }
+
+    /** 已有描述就直接用；没有就请模型写一段并落盘成设计音色 */
+    async ensureAutoDesign(speaker, text, signal) {
+        const existing = (this.settings.designs || []).find(d => d.name === speaker);
+        if (existing && existing.prompt) {
+            return existing;
+        }
+        try {
+            const description = await this.requestVoiceDescription(speaker, text, signal);
+            const design = { name: speaker, prompt: description, auto: true };
+            this.settings.designs = (this.settings.designs || []).filter(d => d.name !== speaker).concat(design);
+            this.settings.designs.sort((a, b) => a.name.localeCompare(b.name, 'zh'));
+            this.voices = await this.fetchTtsVoiceObjects();
+            saveTtsProviderSettings();
+            this.renderDesignList();
+            toast('info', `已为「${speaker}」自动生成音色描述`);
+            return design;
+        } catch (error) {
+            if (signal?.aborted || isAbortError(error)) {
+                return null;
+            }
+            console.warn('[MiMo TTS] 自动音色设计失败，本次回落到默认音色：', error);
+            toast('warning', `自动音色设计失败（${error?.message || error}），本次用默认音色朗读`);
+            return null;
+        }
+    }
+
+    /** 让宿主模型写音色描述：复用用户已配好的归属解析连接与聊天补全预设 */
+    async requestVoiceDescription(speaker, text, signal) {
+        const context = this.getHostContext();
+        if (!context || typeof context.generateTask !== 'function') {
+            throw new Error('当前宿主不提供 generateTask（自动音色设计需要 Luker 的归属解析能力）');
+        }
+        const helper = await loadToolCallHelper();
+        const ttsSettings = context.extensionSettings?.tts || {};
+        const args = await helper.requestToolCallWithRetry(context, { toolCallRetryMax: 1, rpmLimit: 0 }, {
+            taskMessages: [
+                { role: 'system', content: AUTO_DESIGN_SYSTEM_PROMPT },
+                { role: 'user', content: buildAutoDesignUserPrompt(context, speaker, text) },
+            ],
+            apiPresetName: String(ttsSettings.npcAttributionApiPresetName || '').trim(),
+            llmPresetName: String(ttsSettings.npcAttributionPresetName || '').trim(),
+            functionName: AUTO_DESIGN_TOOL_NAME,
+            functionDescription: 'Report a short voice-design description for this speaker.',
+            parameters: {
+                type: 'object',
+                required: ['description'],
+                properties: { description: { type: 'string' } },
+                additionalProperties: false,
+            },
+            abortSignal: signal || null,
+        });
+        const description = String(args?.description || '').trim();
+        if (!description) {
+            throw new Error('模型没有返回音色描述');
+        }
+        return description.slice(0, DESIGN_PROMPT_MAX);
     }
 
     /**
@@ -1280,6 +1441,70 @@ function resolvePresetModel(model) {
             + '音色设计请用面板下方的「音色设计」区（它会自动使用该模型），这里请改回 mimo-v2.5-tts。');
     }
     return m || MODEL_PRESET;
+}
+
+/** 宿主的多音色 voiceMapKey 带段类型后缀，取说话人名时要先去掉 */
+function extractSpeakerName(voiceMapKey) {
+    let name = String(voiceMapKey || '').trim();
+    for (const suffix of MULTI_VOICE_KEY_SUFFIXES) {
+        if (name.endsWith(suffix)) {
+            name = name.slice(0, -suffix.length).trim();
+            break;
+        }
+    }
+    return name;
+}
+
+/**
+ * 按需加载宿主的工具调用助手（Luker 的 scripts/lib/iter-tool-calling.js）。
+ * 原版酒馆没有这个文件，所以只能动态 import + 容错；失败时清空缓存，允许下次重试。
+ */
+let toolCallHelperPromise = null;
+async function loadToolCallHelper() {
+    if (toolCallHelperPromise) {
+        return toolCallHelperPromise;
+    }
+    toolCallHelperPromise = (async () => {
+        const mod = await import('../../../lib/iter-tool-calling.js');
+        if (typeof mod?.requestToolCallWithRetry !== 'function') {
+            throw new Error('宿主缺少 requestToolCallWithRetry');
+        }
+        return mod;
+    })();
+    try {
+        return await toolCallHelperPromise;
+    } catch (error) {
+        toolCallHelperPromise = null;
+        throw error;
+    }
+}
+
+const AUTO_DESIGN_SYSTEM_PROMPT = [
+    'You are a casting assistant for a text-to-speech engine.',
+    'Write a voice-design description for the given speaker, based on the speaker name, the quoted line and recent context.',
+    'Cover where inferable: gender and age, timbre/texture, emotion and tone, speaking pace.',
+    'Write in Chinese, 1 to 4 sentences.',
+    'Describe only the voice; never mention recording, EQ, reverb, compression or other post-processing.',
+    'Do not invent contradictory traits; if the evidence is thin, stay generic.',
+    'Put the description in the required tool field and nothing else.',
+].join('\n');
+
+/** 给模型的用户消息：说话人 + 这一句 + 最近两条对话 */
+function buildAutoDesignUserPrompt(context, speaker, line) {
+    const parts = [`说话人：${speaker}`, `这一句台词：${String(line || '').trim()}`];
+    const chat = Array.isArray(context?.chat) ? context.chat : [];
+    const recent = [];
+    for (let i = Math.max(0, chat.length - 2); i < chat.length; i++) {
+        const message = chat[i];
+        if (message && typeof message.mes === 'string' && message.mes.trim()) {
+            recent.push(`${message.name || '未知'}: ${message.mes.trim().slice(0, 300)}`);
+        }
+    }
+    if (recent.length > 0) {
+        parts.push(`最近的对话：\n${recent.join('\n')}`);
+    }
+    parts.push('只输出 1~4 句中文音色描述。');
+    return parts.join('\n\n');
 }
 
 /** 设计音色列表里的一行描述预览：压掉换行、超长截断（按码点切，避免把 emoji 劈成半个） */

@@ -4,192 +4,176 @@
 
 标记约定：
 - **✅** 引用的代码位置与仓库事实，已在本仓库核实（读代码或跑命令）。
-- **⚠️** 行为类结论（MiMo 服务端行为、酒馆内部行为、作者实测数字）：即使行号引用准确，本机也无法复核，**不要仅凭直觉推翻**。
+- **⚠️** 行为类结论（MiMo 服务端行为、酒馆/Luker 内部行为、作者实测数字）：即使描述准确，本机也无法复核，**不要仅凭直觉推翻**。
 - **🟡** 推断，未证实。
+
+> 代码地图**不写行号**：这个文件只有 1 个源文件，行号每次提交都会漂；用函数名检索即可（`grep -n '函数名' index.js`）。
 
 ---
 
 ## 1. 项目是什么
 
-SillyTavern（酒馆）的**第三方 TTS 供应商扩展**：把小米 MiMo 语音合成接进酒馆 TTS 面板，
-装好后 Provider 下拉框多一个 `MiMo`。当前 `v2.1.0`，三种音色来源：**预置音色 / 音色设计 / 音色克隆**。
+SillyTavern / Luker 的**第三方 TTS 供应商扩展**：把小米 MiMo 语音合成接进 TTS 面板，
+装好后 Provider 下拉框多一个 `MiMo`。当前 `v2.2.0`，四种音色来源：**预置音色 / 音色克隆 / 音色设计 / 自动音色设计**。
 
 | 事实 | 值 | 依据 |
 |---|---|---|
-| 仓库文件 | `LICENSE` `README.md` `index.js` `manifest.json` + 本文档 `AGENTS.md` | ✅ `git ls-files` |
-| 构建 / 测试 / 依赖 | **没有**。无 `package.json`、无测试、无 CI、无 `.gitignore`、无 npm 依赖 | ✅ 跟踪文件清单只有上面 4 个；工作区除本文档外没有别的文件 |
-| 代码形态 | 单文件 ES module（`index.js`，**1358 行**），浏览器直接加载，**不过打包器** | ✅ 文件头 import 与 `manifest.json` 的 `"js": "index.js"` |
-| 外部依赖 | 酒馆注入的全局：`$`（jQuery）、`toastr`；浏览器内建：`fetch` `indexedDB` `Blob` `FileReader` `TextDecoder` `AbortController` `URL` `atob` `document` | ✅ 全文没有 `import` jQuery/toastr（其余是浏览器内建，无需 import） |
-| 唯一 import | `../../../../script.js`（`getRequestHeaders`/`eventSource`/`event_types`）、`../../tts/index.js`（`registerTtsProvider`/`saveTtsProviderSettings`） | ✅ `index.js:37-38` |
-| 许可证 | MIT | ✅ `LICENSE:1` |
-| git 状态 | `main` 跟踪 `origin/main`；v2.1.0（音色设计）已合入 `main`，提交见 `git log --oneline`（推送状态以 `git status` 为准） | ✅ `git log --oneline` |
+| 仓库文件 | `LICENSE` `README.md` `index.js` `manifest.json` + 本文档 | ✅ `git ls-files` |
+| 构建 / 测试 / 依赖 | **没有**。无 `package.json`、无测试、无 CI、无 `.gitignore`、无 npm 依赖 | ✅ 跟踪文件清单只有 5 个文件 |
+| 代码形态 | 单文件 ES module（`index.js`，**1583 行**），浏览器直接加载，**不过打包器** | ✅ 文件头 import 与 `manifest.json` 的 `"js": "index.js"` |
+| 静态依赖 | 酒馆注入的全局：`$`（jQuery）、`toastr`、`SillyTavern.getContext()`；两个静态 import：`../../../../script.js`、`../../tts/index.js` | ✅ 全文 import 只有这两行 |
+| 动态依赖（可选） | 自动音色设计会 `import('../../../lib/iter-tool-calling.js')`——**Luker 专有，原版酒馆没有** | ✅ 只在 `loadToolCallHelper` 里动态加载 |
+| 许可证 | MIT；`manifest.json` 的 `author`/`homePage` 与 LICENSE 署名仍是 `ymf2317-tech` | ✅ 见 §1 末尾说明 |
+| git 状态 | `main` 跟踪 `origin/main`（`TomDan-GodsHand/SillyTavern-MiMoTTS`）；v2.1.0 与 v2.2.0 已合入 | ✅ `git log --oneline` |
 | 本机 node | v24.15.0，`node --check index.js` 通过（退出码 0） | ✅ 实测 |
 
-> **地址与署名的来源不同，改之前先问人**：git remote 与 README 的安装地址都是
-> `https://github.com/TomDan-GodsHand/SillyTavern-MiMoTTS.git`（✅ 可核实）；
-> 而 `manifest.json:7` 的 `author`、`manifest.json:9` 的 `homePage`、`LICENSE:3` 的版权署名仍是 `ymf2317-tech`（✅ 可核实）。
-> 🟡 **推断**：`ymf2317-tech` 是上游作者/另一个账号，`TomDan-GodsHand` 是本仓库的托管处 —— 未证实。
-> 这几处是**署名与来源信息**，改之前必须问维护者，别当成"地址不一致就顺手统一"。
+> **地址与署名的来源不同**：README 的安装地址与 git remote 都是 `TomDan-GodsHand`（✅ 可核实）；
+> 而 `manifest.json` 的 `author` / `homePage`、`LICENSE` 的版权署名仍是 `ymf2317-tech`。
+> 🟡 推测那是上游作者/另一账号。**维护者已明确决定暂不改这几处**（署名与来源信息），别再动。
 
 ---
 
-## 2. 代码地图（`index.js`，行号对应提交 `b4ef586`）
+## 2. 代码地图（按职责，不写行号）
 
-| 起始行 | 内容 |
+**顶层（模块级）**
+
+| 名称 | 作用 |
 |---|---|
-| L1 | 顶部契约注释：Xing 头帧、播放方式、传输方式、克隆契约、**音色设计契约（含 400 报错原文）** —— **改动前必读** |
-| L37 | 唯一的 import（酒馆两个模块） |
-| L40 | 常量：`VERSION`、`MIMO_ENDPOINT`、`ST_RELAY_ROUTE`、`MODEL_PRESET`、`MODEL_CLONE`、`MODEL_DESIGN`、`CLONE_PREFIX`、`DESIGN_PREFIX`、`IDB_NAME` |
-| L72 | `isAbortError` |
-| L81 | `hasSpeakableText`（空文本保护） |
-| L91 / L98 | `beginGeneration` / `abortActiveGeneration`（newest-wins 取消） |
-| L109 | `toast` |
-| L122 / L132 / L147 | `base64ToBytes` / `concatBytes` / `pcm16ToWav` |
-| L182 / L200 / L209 / L220 | IndexedDB：`idbOpen` / `cloneGet` / `clonePut` / `cloneDelete` |
-| L232 / L246 / L264 | `fileToBase64` / `normalizeAudioMime` / `bytesToHuman` |
-| L274 | `class MiMoTtsProvider` |
-| L305 | `settingsHtml`（面板 HTML 内联字符串） |
-| L409 / L417 | `constructor` / `dispose` |
-| L422 | `loadSettings`（未知设置项告警、`clones`/`designs` 归一、控件绑定） |
-| L524 / L555 | `onSettingsChange`（数值夹取、**保留前缀告警**）/ `markSaved` |
-| L564 / L583 / L640 | `renderCloneList` / `onCloneAdd` / `onCloneDelete` |
-| L665 / L684 / L723 / L737 | `renderDesignList` / `onDesignAdd` / `onDesignDelete` / `buildDesignPrompt` |
-| L742 / L746 / L752 / L763 | `checkReady` / `onRefreshClick` / `getVoice` / `fetchTtsVoiceObjects` |
-| L779 / L794 / L798 | `resolveVoiceId` / `isCloneVoice` / `isDesignVoice` |
-| L806 | `generateTts`（合成总入口） |
-| L843 | `splitIntoChunks`（分段流水线切分） |
-| L874 | `wholeTts`（逐批请求、边到边抛；`options.single` 供音色设计用） |
-| L916 | `fetchWholeBytes`（分派：克隆 → 设计 → 中转 → 直连非流式） |
-| L989 | `fetchCloneBytes` |
-| L1046 | `fetchDesignBytes`（**绝不携带 `audio.voice`**） |
-| L1096 / L1139 / L1156 | `chunkedTts` / `takeWavChunk` / `readSseAudio` |
-| L1213 / L1230 | `postDirect` / `postJson`（带 api-key、错误翻译） |
-| L1258 | `previewTtsVoice` |
-| L1276 | `resolvePresetModel`（拦住"模型框被填成 voicedesign"） |
-| L1286 / L1291 / L1297 | `designPreview` / `escapeHtml` / `escapeAttr` |
-| L1305 / L1307 / L1326 / L1330 / L1344 | `registered` / `ensureOption` / `init` / `register` / `scheduleUi` |
-| L1358 | 模块末尾直接调用 `register()` |
+| 文件头注释 | 全部契约：Xing 头帧、播放/传输方式、克隆契约、音色设计契约、自动音色设计契约 —— **改动前必读** |
+| 常量区 | `VERSION`、`MIMO_ENDPOINT`、`ST_RELAY_ROUTE`、`MODEL_PRESET/CLONE/DESIGN`、`CLONE_PREFIX`、`DESIGN_PREFIX`、`DEFAULT_VOICE_MARKER`、`MULTI_VOICE_KEY_SUFFIXES`、`IDB_NAME` |
+| `isAbortError` / `hasSpeakableText` | 取消判定 / 空文本保护 |
+| `beginGeneration` / `abortActiveGeneration` | newest-wins 取消（全局单例 `activeController`） |
+| `toast` | toastr 包装（无 toastr 时降级到 console） |
+| `base64ToBytes` / `concatBytes` / `pcm16ToWav` | 字节与 WAV 封装 |
+| `idbOpen` / `cloneGet` / `clonePut` / `cloneDelete` | 克隆样本的 IndexedDB 存取 |
+| `fileToBase64` / `normalizeAudioMime` / `bytesToHuman` | 上传与展示工具 |
+| `resolvePresetModel` | 「模型」框取值校验（拦住 voicedesign 被填到预置路径） |
+| `extractSpeakerName` | 从 `voiceMapKey` 剥掉多音色后缀，取说话人名 |
+| `loadToolCallHelper` | 动态加载 Luker 的 `iter-tool-calling.js`（带失败清缓存） |
+| `AUTO_DESIGN_SYSTEM_PROMPT` / `buildAutoDesignUserPrompt` | 自动音色设计的提示词 |
+| `designPreview` / `escapeHtml` / `escapeAttr` | 列表渲染与转义 |
+| `ensureOption` / `init` / `register` / `scheduleUi` | 供应商注册与下拉框兜底（幂等） |
+
+**`class MiMoTtsProvider`**
+
+| 名称 | 作用 |
+|---|---|
+| `settingsHtml` | 面板 HTML（预置…/音色设计/自动音色设计/音色克隆） |
+| `loadSettings` | 设置读取、`clones`/`designs` 归一（保留 `auto` 标记）、控件绑定 |
+| `onSettingsChange` / `markSaved` | 数值夹取、保留前缀告警、保存时间提示 |
+| `renderCloneList` / `onCloneAdd` / `onCloneDelete` | 克隆音色列表与增删 |
+| `renderDesignList` / `onDesignAdd` / `onDesignDelete` / `buildDesignPrompt` | 设计音色列表与增删（AI 生成的标 `AI`） |
+| `fetchTtsVoiceObjects` | 把 预置 + 克隆 + 设计 拼成选项列表 |
+| `resolveVoiceId` / `isCloneVoice` / `isDesignVoice` | 音色 ID 归一与前缀判定 |
+| `generateTts(text, voiceId, voiceMapKey)` | **合成总入口**（第 3 参是宿主传的 voiceMap 键，带说话人名） |
+| `getHostContext` / `getLiveVoiceMap` / `resolveAutoDesignSpeaker` | 自动音色设计：宿主上下文、实时 voiceMap、判定是否接管 |
+| `autoDesignTts` / `ensureAutoDesign` / `requestVoiceDescription` | 自动音色设计：合成入口、生成并落盘描述、调宿主模型 |
+| `splitIntoChunks` | 分段流水线切分（几何增长） |
+| `wholeTts` | 逐批请求、边到边抛；`options.single` 供音色设计用 |
+| `fetchWholeBytes` | 分派：克隆 → 设计 → 中转 → 直连非流式 |
+| `fetchCloneBytes` / `fetchDesignBytes` | 克隆合成 / 音色设计合成（后者**绝不带 `audio.voice`**） |
+| `chunkedTts` / `takeWavChunk` / `readSseAudio` | pcm16 流式分块 |
+| `postDirect` / `postJson` | 直连请求（带 api-key）/ 错误人话化 |
+| `previewTtsVoice` | 试听（**不传 signal**，见 §4） |
 
 ---
 
 ## 3. 硬约束（改动的禁区）
 
-1. **不要把整段播放"优化"成流式 MP3 拼接。** MiMo 的 SSE 每块自带一个 MP3 Xing 头帧，拼起来每 ~0.3 秒"突"一下；
-   所以整段播放必须走 `stream:false`（`fetchWholeBytes`），要分块只能用 `pcm16` + 本地封 WAV（`chunkedTts`）。
-   依据：✅ 引用准确 `index.js:5-10`（注释）、`955`（`stream:false`）、`1099`（`pcm16`）、`1145`（`pcm16ToWav`）；⚠️ 头帧行为本身是作者实测。
-2. **不要删掉空文本保护。** `hasSpeakableText` 在入口（L810）和每批（L883）各拦一次。
-   依据：✅ `810`、`883`；⚠️「MiMo 对空串/纯标点返回 HTTP 500」来自注释的作者实测。
-3. **不要删掉 newest-wins 取消。** 新请求一进来就 `abort()` 上一个（`beginGeneration` L91、`abortActiveGeneration` L98、
-   `dispose` L419、入口 L818）；凡是新增的 `await`/循环，都要在耗时点前检查 `signal?.aborted`
-   （L878、L893、L1101、L1127）。✅
-   依据：✅ `index.js:61-107`；⚠️「酒馆 `resetTtsPlayback()` 只清队列、不通知供应商」是作者结论（酒馆侧行为）。
-4. **音色 ID 的不变量**：预置音色 = 名字原样；克隆 = `clone:` 前缀（`voice_id`）+ `[克隆] ` 显示名；
-   设计 = `design:` 前缀 + `[设计] ` 显示名（✅ `50-53`）；三种都要经 `resolveVoiceId` 归一（✅ `779-800`）。
-   ⚠️「酒馆 voicemap 里存的是显示名、`generateTts` 收到的是 `voice_id`」是酒馆侧行为，本机无酒馆源码，**未复核**
-   —— 但这正是 `resolveVoiceId` 存在的原因，别凭猜测删掉它。
-5. **参考音频永远不进 `settings.json`**：音频本体在 IndexedDB（`mimo-tts-clones`/`clones`，✅ `58-59`、`182-229`），
-   设置里只留 `{name, mime, bytes, createdAt}`（✅ `onCloneAdd`，L583）。**设计音色的描述文本相反**：
-   只有几十字，直接放 `settings.designs`（✅ L300）。
-6. **克隆的官方契约不要改**：`model=mimo-v2.5-tts-voiceclone`，`audio.voice` 必须是 `data:<mime>;base64,<样本>`
-   （仅 mp3/wav，base64 ≤10MB），**文本放 `assistant` 消息**，风格放 `user`；克隆**只能直连**。✅ `989-1046`。
-7. **音色设计的官方契约不要改**：`model=mimo-v2.5-tts-voicedesign`，**描述放 `user` 消息、正文放 `assistant` 消息**，
-   并且 **`audio.voice` 绝对不能出现**——实测带上它直接 **HTTP 400**
-   （`audio.voice is not supported for voice design model`）。所以它单独走 `fetchDesignBytes`（✅ L1046，payload 在 L1064）。
-   设计音色**只能直连**，且**必须整段一次合成**（`options.single`，✅ L828）：因为它每次请求都重新设计，
-   分批会让同一条消息里出现两种音色。
-8. **「模型」输入框只能填预置模型。** 它是自由文本，被填成 `mimo-v2.5-tts-voicedesign` 时，预置音色（直连/分块）
-   与中转都会带 `audio.voice` → 必然 400。已用 `resolvePresetModel()`（L1276）在 `postDirect`（L1216）与中转 body（L935）
-   统一取值拦下，**别绕过它直接用 `this.settings.model`**。
-9. **预置音色名不得占用保留前缀。** 名字以 `clone:` / `[克隆] ` / `design:` / `[设计] ` 开头会被 `resolveVoiceId` 的前缀分支
-   劫持成克隆/设计音色（`generateTts` 只看前缀，见 L798）。`onSettingsChange` 会在控制台点名警告（L524 区块），
-   但**不修改用户配置**。
-10. **中转地址留空 = 不启用**，并给出明确报错；不要重新写死任何内网/默认中转地址。✅ `fetchWholeBytes`（L916）。
-11. **用户可见文案保持中文、说人话**（`postJson` 已把 `Failed to fetch` 翻译成可操作提示，L1230）。✅
-    已知例外：`getVoice` 抛给框架的 `TTS Voice name ... not found`（L752 区块内）与 toastr 标题 `MiMo TTS`（L109）是英文，别顺手改。
+1. **不要把整段播放"优化"成流式 MP3 拼接。** MiMo 的 SSE 每块自带 MP3 Xing 头帧，拼起来每 ~0.3 秒"突"一下；
+   整段播放必须 `stream:false`，要分块只能用 `pcm16` + 本地封 WAV。✅ 引用准确；⚠️ 头帧行为是作者实测。
+2. **不要删掉空文本保护。** `hasSpeakableText` 在 `generateTts` 入口与 `wholeTts` 每批各拦一次。
+   ⚠️「MiMo 对空串/纯标点返回 HTTP 500」来自注释的作者实测。
+3. **不要删掉 newest-wins 取消。** `generateTts` 一进来就 `beginGeneration()`；新增的 `await`/循环都要在耗时点前
+   检查 `signal?.aborted`。⚠️「酒馆 `resetTtsPlayback()` 只清队列、不通知供应商」是作者结论。
+4. **音色 ID 的不变量**：预置 = 名字原样；克隆 = `clone:` + `[克隆] `；设计 = `design:` + `[设计] `；
+   三种都要经 `resolveVoiceId` 归一。⚠️「酒馆 voicemap 存显示名、`generateTts` 收 voice_id」是酒馆侧行为，未复核。
+5. **参考音频永远不进 `settings.json`**（IndexedDB 存样本、设置只留元数据）；**设计音色的描述文本相反**，直接进 `settings.designs`。
+6. **克隆的官方契约不要改**：`mimo-v2.5-tts-voiceclone` + `audio.voice = data:<mime>;base64,<样本>`，文本放 `assistant`，只能直连。
+7. **音色设计的官方契约不要改**：`mimo-v2.5-tts-voicedesign`，描述放 `user`、正文放 `assistant`，**`audio.voice` 绝对不能出现**
+   （实测带上直接 400：`audio.voice is not supported for voice design model`）。设计音色**只能直连**，且**必须整段一次合成**
+   （`options.single`）：它每次请求都重新设计，分批会让一条消息里出现两种音色。
+8. **「模型」输入框只能填预置模型。** 填成 voicedesign 会让预置/中转路径必然 400，已由 `resolvePresetModel` 拦下；
+   **别绕过它直接用 `this.settings.model`**。
+9. **预置音色名不得占用保留前缀**（`clone:` / `[克隆] ` / `design:` / `[设计] `），否则会被前缀分支劫持；
+   `onSettingsChange` 只警告、不改用户配置。
+10. **中转地址留空 = 不启用**，并给出明确报错；不要写死任何默认中转地址。
+11. **用户可见文案保持中文、说人话**。已知例外：`getVoice` 抛给框架的 `TTS Voice name ... not found` 与 toastr 标题是英文。
 12. **不要引入构建步骤、打包器、npm 依赖或类型系统**：`index.js` 必须能被浏览器按单文件直接加载。
-13. **不要改目录层级**：`../../../../script.js`、`../../tts/index.js` 是按
-    `scripts/extensions/third-party/<扩展名>/index.js` 的位置算出来的（✅ 算术自洽），挪一层 import 立刻失效。
-    ⚠️ 另一种安装位置 `data/<user>/extensions/mimo-tts/` 在酒馆里如何解析，本仓库无法验证。
+13. **不要改目录层级**：`../../../../script.js`（根）与 `../../tts/index.js`（extensions/tts）都是相对定位，挪一层就失效。
+14. **自动音色设计只能用宿主的既有能力，不要自建归属解析**：拿 `generateTts` 的第 3 参（说话人名）+
+    provider voiceMap 里的 `[Default Voice]` 判定；模型调用复用宿主的归属解析连接/预设
+    （`npcAttributionApiPresetName` / `npcAttributionPresetName`），**不要另加 key 配置**。
+15. **宿主内部模块只能动态 import**（`import('../../../lib/iter-tool-calling.js')`）：原版酒馆没有这个文件，
+    静态 import 会让整个扩展加载失败。
+16. **自动音色设计失败必须回落默认音色**，不得抛错中断朗读；只在未被 abort 时提示用户。
 
 ---
 
 ## 4. 已知的坑与现状（比 README 更细的补充）
 
-- **`wholeTts` 的 `options.single` 现在有调用方了**：音色设计（L828）。原因见上面第 7 条——分批会让设计音色漂移。
-  克隆**不做**这个处理，因为它的音色由每次重传的样本钉住，分批不会漂移。
-- **设计音色的三条实测结论**（v2.1.0 开发时用真实 Key 验的）：
-  ① 带 `audio.voice` → 400；② 同一描述两次生成，音频长度 69528 / 57240 字节，**不固定**；
-  ③ 30 字文本耗时 2.8s ~ 3.2s。所以"试听"不等于"待会儿听到的就是这个"，要稳定音色请改用克隆。
-- **`fetchDesignBytes` / `fetchCloneBytes` 的入参是"已归一的 `voice_id`"，不是显示名**：
-  它们内部直接 `slice(DESIGN_PREFIX.length)` / `slice(CLONE_PREFIX.length)`，显示名只能先过 `resolveVoiceId`（L779）。
-  `generateTts` 和 `previewTtsVoice` 都已经这么做了；新增调用点时别把 `[设计] 名字` 直接喂进去。
-- **同名的设计音色会被静默覆盖**（`onDesignAdd` 用 `filter(d => d.name !== name).concat({name, prompt})`，L684 区块），
-  与克隆当年的行为一致。要改就两条路一起改，别只改一边。
-- **`loadSettings` 会丢掉"有名字但描述为空"的设计音色**（L422 区块），并在控制台报出被忽略的数量；
-  `fetchDesignBytes` 也要求描述非空 —— 改这里要两边一起改。
-- **toastr 里的音色名没有转义**（`onDesignAdd` L684 区块、`onDesignDelete` L723 区块，克隆同理）。
-  列表渲染走 `innerHTML` 但已转义（L1291/L1297）；toastr 这条只在酒馆把 `escapeHtml` 设为 false 时才是自伤型 XSS，
-  且名字只有用户自己能输入，**已评估为可接受风险**，未改动（本机没有酒馆源码，无法判定 toastr 默认值）。
-- **试听不受取消机制保护**：`previewTtsVoice`（L1258）调 `fetchWholeBytes` 时**没有传 signal**，也不走 `beginGeneration`，
-  所以试听既不会被新请求打断，也不会打断正在朗读的生成。改这块要一并想清楚交互。✅
-- **数值有夹取**：`chunk_seconds` 1-60、`pipeline_first` 5-200、`pipeline_max` 20-500（✅ `onSettingsChange`，L524）；
-  `loadSettings` 对未知设置项 `console.warn` 后忽略（✅ L422）——新增设置项要同时改 `defaultSettings`（L274 区块）和控件绑定。✅
-- **注册是幂等的**：`register()` 在文件末尾直接调用（✅ L1358），`init()`（L1326）内部也会调（✅ L1327）；
-  `ensureOption` 会去重下拉框里重复的 `<option>`（✅ L1307），并在 0/500/1500/3000ms 与 `APP_READY` 时重试（✅ L1344）。
-- **分段切分是几何增长**：首批 `pipeline_first`（默认 20），之后每批最多翻倍、封顶 `pipeline_max`（默认 120）。
-  依据：✅ `splitIntoChunks`（L843）；⚠️「MiMo 生成速度约为播放速度的 2.5 倍」是作者实测。
-- ⚠️ **作者实测、本仓库无法复核的酒馆行为**（来自 README 与代码注释，改动相关逻辑前请先在真实酒馆里验证）：
-  酒馆的文本清洗发生在切段**之后**且**逐行**执行（所以"按段朗读"开着会让跨行正则静默失效）；
-  播放器每换一次音源要重新解码等待 0.3~0.5 秒（分 N 块必卡 N-1 次）；`beforeunload` 不保存设置。
+- **Luker 调 provider 的真实签名是 `generateTts(text, voiceId, voiceMapKey)`**（✅ 源码核实：
+  `public/scripts/extensions/tts/index.js` 里 `tts()` → `ttsProvider.generateTts(text, voiceId, voiceMapKey)`）。
+  第 3 参是多音色模式下带后缀的 voiceMap 键；原版酒馆只传两个参数。
+- **"没配音色"的判定依据**：provider 的 voiceMap（`extension_settings.tts.<provider>.voiceMap`，✅ 源码核实）
+  里该键的值是 `'[Default Voice]'`；`'disabled'` 表示禁用；宿主会把新 NPC **实时**写进这个对象，
+  所以必须从 `getContext()` 读实时值，`this.settings.voiceMap` 是加载时的副本。
+- **模型连接的复用方式**：`requestToolCallWithRetry(context, {toolCallRetryMax, rpmLimit}, {taskMessages, apiPresetName, llmPresetName, functionName, functionDescription, parameters, abortSignal})`，
+  要求 `context.generateTask` 存在（Luker 专有）。✅ 源码核实。
+- **设计音色的三条实测结论**：① 带 `audio.voice` → 400；② 同一描述两次生成音频长度不同（69528 / 57240 字节），**不固定**；
+  ③ 30 字文本 2.8~3.2s。所以"试听"不等于"待会儿听到的就是这个"。
+- **`wholeTts` 的 `options.single` 有两个调用方**：手动设计音色、自动设计音色。克隆**不分批的原因不同**（样本钉住音色）。
+- **`fetchDesignBytes` / `fetchCloneBytes` 的入参是"已归一的 `voice_id`"，不是显示名**：显示名必须先过 `resolveVoiceId`。
+- **同名设计音色/自动生成会覆盖旧的**（`filter(...).concat(...)`），与克隆历史行为一致；`loadSettings` 保留 `auto` 标记。
+- **`loadSettings` 会丢掉"有名字但描述为空"的设计音色**并在控制台报数量，`fetchDesignBytes` 也要求描述非空——两边要一起改。
+- **toastr 里的音色名未转义**（列表渲染已转义）；只在酒馆把 `escapeHtml` 设为 false 时才是自伤型 XSS，
+  名字只有本机用户能输入，**已评估为可接受风险**。
+- **试听不受取消保护**：`previewTtsVoice` 调 `fetchWholeBytes` 不传 signal，也不 `beginGeneration`。
+- **注册是幂等的**：模块末尾直接 `register()`，`init()` 也会调；`ensureOption` 去重并按 0/500/1500/3000ms + `APP_READY` 重试。
+- **版本位点共五处**：`index.js` 文件头注释、`VERSION`、`manifest.json` 的 `version`、README 头部、README 更新日志。当前都是 `2.2.0`。
+- ⚠️ **作者实测、本机无法复核的宿主行为**：文本清洗在切段**之后**且**逐行**执行（"按段朗读"开着会让跨行正则静默失效）；
+  播放器每换一次音源要重新解码 0.3~0.5s；`beforeunload` 不保存设置。
 
 ---
 
 ## 5. 改完怎么验证（没有测试，只能这样验）
 
-1. **语法**：`node --check index.js` → 期望退出码 0。已在本机 **Node v24.15.0** 实测通过；
-   没有 `package.json` 时 `node --check` 需要按 ESM 解析这个文件，**更早的 Node 版本未测**。
-2. **逻辑自测台（可复用，脚本本身不入库）**：把 `index.js` 复制成临时 `.mjs`，只把 L37-38 两行 `import` 换成桩
+1. **语法**：`node --check index.js` → 期望退出码 0（本机 Node v24.15.0 实测；更早版本未测）。
+2. **逻辑自测台（可复用，脚本不入库）**：把 `index.js` 复制成临时 `.mjs`，仅把两行 `import` 换成桩
    （`getRequestHeaders` / `eventSource` / `event_types` / `registerTtsProvider` / `saveTtsProviderSettings`），
-   然后在测试脚本里先设 `globalThis.document` / `globalThis.window` / `globalThis.$`（jQuery 链式桩：
-   `() => ({ val: () => '', prop: () => false, off() { return this; }, on() { return this; } })`），
-   再 `await import(pathToFileURL(临时文件))`，即可直接实例化 `MiMoTtsProvider` 并断言：
-   `resolveVoiceId` 的前缀归一、`loadSettings` 的归一化与告警、`fetchTtsVoiceObjects` 的三种来源、
-   `buildDesignPrompt` 的拼接、`fetchDesignBytes` 的 payload（**断言 `audio` 里没有 `voice` 键**）、
-   中转/缺描述的报错、5xx 重试、`generateTts` 的分派（设计必须 `single: true`）、
-   `renderDesignList` 的转义与代理对安全、`resolvePresetModel` 对"模型框填成 voicedesign"的拦截。
-   v2.1.0 用三轮共 **46 个断言**验过（v1 22 / v2 13 / v3 11，全绿）。
-3. **真接口实测（可选，需要 Key，且必须用 `%TEMP%` 之类仓库外目录存产物）**：
-   直接 `curl` 打 `https://api.xiaomimimo.com/v1/chat/completions`，用与 `fetchDesignBytes` 相同的 JSON。
-   **不要把 Key 写进仓库任何文件**。v2.1.0 的结论（400 / 随机性 / 延迟）就是这么来的。
-4. **静态自查**：`git diff` 只应包含你打算改的东西；不要在 `index.js` 上做全文件格式化。
-5. **手工回归**（需要真实酒馆，安装位置 `data/<user>/extensions/mimo-tts/` 或 `public/scripts/extensions/third-party/mimo-tts/`，改完 Ctrl+Shift+R 硬刷新）：
+   测试脚本里先设 `globalThis.document` / `window` / `$`（jQuery 链式桩），再 `await import(pathToFileURL(...))`。
+   覆盖：前缀归一、`loadSettings` 归一与告警、三种音色来源、`buildDesignPrompt`、`fetchDesignBytes` 的 payload
+   （**断言 `audio` 里没有 `voice`**）、5xx 重试、`generateTts` 分派、`renderDesignList` 转义与代理对、
+   `resolvePresetModel` 拦截、以及自动音色设计的判定/落盘/回落（用伪 `SillyTavern.getContext()` + 伪 voiceMap）。
+   v2.2.0 用**四轮共 66 个断言**验过（22 / 13 / 11 / 20，全绿）。
+3. **真接口实测（可选，需要 Key，产物放仓库外）**：`curl` 打 MiMo 端点，用与 `fetchDesignBytes` 相同的 JSON；
+   **不要把 Key 写进仓库任何文件**。
+4. **静态自查**：`git diff` 只应包含你打算改的东西；不要全文件格式化。
+5. **手工回归**（需要真实 Luker/酒馆；装到 `data/<user>/extensions/mimo-tts/` 或 `public/scripts/extensions/third-party/mimo-tts/`，硬刷新）：
 
 | 场景 | 期望 |
 |---|---|
 | Provider 下拉框 | 有且只有一个 `MiMo` |
-| 预置音色 + 整段播放 | 连贯无"突突"；长文本首批 ~1-2 秒出声 |
-| 分块流式 | 有间断（这是设计上限，不是 bug） |
-| 克隆：添加 / 试听 / 删除 | 添加后出现在 Voice Map；试听能出声；删除后参考音频一并消失 |
-| **设计：添加 / 试听 / 删除** | 列表显示 `[设计] 名字` 与描述摘要；Voice Map 里可选；试听能出声；删除后描述一并消失 |
-| **设计音色朗读长文本** | 全程音色一致（不分批），首音比预置音色慢 |
-| **「模型」框填 voicedesign 后朗读预置音色** | 立刻报"该模型不接受 voice 字段"，而不是 MiMo 的 400 |
-| 朗读中途切换消息 | 旧音频不再落地播放（不会"两条一起读"） |
+| 预置音色整段播放 / 分块流式 | 连贯无"突突" / 有间断（设计上限） |
+| 克隆：添加 / 试听 / 删除 | Voice Map 可选；删除后样本消失 |
+| 设计：添加 / 试听 / 删除 | 列表显示 `[设计] 名字`；长文本音色一致（不分批） |
+| **自动音色设计** | 勾选后，归属解析认出的未配音色 NPC 首次朗读会多一次模型调用并落盘 `[设计] 名字`（带 AI 标记）；之后复用 |
+| **自动音色设计失败** | 关掉 / 换成原版酒馆 / 断网 → 回落默认音色，朗读不中断，控制台一条 warn |
+| 「模型」框填 voicedesign 后朗读预置音色 | 立刻报"该模型不接受 voice 字段" |
+| 朗读中途切换消息 | 旧音频不再落地（不会两条一起读） |
 | 整条都是元数据块的消息 | 不报 500，提示"没有可朗读的文字" |
-| 中转模式且地址留空 | 明确报错，而不是静默失败 |
-| 改完设置后刷新页面 | 设置仍在（含设计音色），面板底部显示"设置已保存 HH:MM:SS" |
+| 中转模式且地址留空 | 明确报错 |
 
-6. **版本位点共五处**，改对外行为时一起对齐：`index.js` 文件头注释（L3）、`VERSION`（✅ `index.js:40`）、
-   `manifest.json` 的 `version`（✅ `manifest.json:8`）、README 头部（✅ `README.md:6`）与更新日志（✅ `README.md:114`）。
-   当前五处都是 `2.1.0`。
+---
 
 ## 6. 提交纪律
 
-- 历史里已有 **4 个同名/近义 message 的隐患点**：`0c3e02d`、`f6657f5`、`bc9015d` 三条 message 完全相同（都是 v2.0.0 合并）。
-  **提交信息要写清实际改了什么**，别再加同名提交。v2.1.0 的两个提交（`f0f30f0` 功能 / `b4ef586` 复核修复）可按此对照。
-- 一次提交只做一件事；README 的《先读这里》《开发者说明》是踩坑记录，改动与它们冲突时，先说明理由再改。
-- 本文档 `AGENTS.md` 由 AI 生成并随代码入库；改它请按同样纪律单独提交，别和功能改动混在一起。
+- 历史里有三条 message 完全相同的 v2.0.0 提交（`0c3e02d`/`f6657f5`/`bc9015d`）。**提交信息要写清实际改了什么**。
+  可参照：`f0f30f0`（v2.1.0 功能）/ `b4ef586`（复核修复）/ `6911298`（AGENTS 入库）/ `05ec347`（README 地址）。
+- 一次提交只做一件事；README 的《先读这里》《开发者说明》是踩坑记录，与之冲突时先说明理由。
+- 本文档随代码入库；改它请单独提交，别和功能改动混在一起。
 
 ## 7. 汇报要求
 
-对用户汇报时用中文；区分「已核实」「推断」「未验证」，写明你跑过什么命令、看到什么输出。
-本机没有酒馆源码，任何关于酒馆内部行为的结论都只能标为未验证。
+对用户汇报时用中文；区分「已核实」「推断」「未验证」，写明跑过什么命令、看到什么输出。
+本机**没有**酒馆/Luker 的安装目录（只有可选的 Luker 源码浅克隆），任何宿主行为结论都要标明验证来源。
